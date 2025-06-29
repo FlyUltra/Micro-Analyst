@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Micro Analyst</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon"></script>
+    <style>
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-thumb { background: #4B5563; border-radius: 4px; }
+        
+        .light-theme {
+            background-color: #f8fafc !important;
+            color: #1f2937 !important;
+        }
+        
+        .light-theme .bg-gray-800 {
+            background-color: #ffffff !important;
+            color: #1f2937 !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+        }
+        
+        .light-theme .bg-gray-900 {
+            background-color: #f8fafc !important;
+            color: #1f2937 !important;
+        }
+        
+        .light-theme .text-gray-100 {
+            color: #1f2937 !important;
+        }
+        
+        .light-theme .text-gray-300 {
+            color: #4b5563 !important;
+        }
+        
+        .light-theme .text-gray-400 {
+            color: #6b7280 !important;
+        }
+        
+        .light-theme .border-gray-600 {
+            border-color: #d1d5db !important;
+        }
+        
+        .light-theme .focus\:border-indigo-500:focus {
+            border-color: #6366f1 !important;
+        }
+        
+        .light-theme input {
+            background-color: #f9fafb !important;
+            color: #1f2937 !important;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans p-6 transition-colors duration-300" id="app">
+<div class="max-w-6xl mx-auto space-y-8">
+
+    <header class="flex justify-between items-center">
+        <h1 class="text-3xl font-bold">Micro Analyst</h1>
+        <div class="flex items-center space-x-4">
+            <div class="text-right">
+                <div id="currentPrice" class="text-2xl font-bold text-green-400">--</div>
+                <div class="text-sm text-gray-400">Actual price</div>
+            </div>
+            <input id="symbolInput" value="BTCUSDT" placeholder="SYMBOLUSDT"
+                   class="bg-gray-800 border-b-2 border-gray-600 focus:border-indigo-500 outline-none px-3 py-2 rounded text-white"
+            />
+            <button id="loadBtn" class="text-indigo-400 hover:text-indigo-200 text-xl">⟳</button>
+            <button id="themeToggle" class="text-gray-400 hover:text-white text-xl">🌙</button>
+        </div>
+    </header>
+
+
+    <section class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        <div class="bg-gray-800 p-4 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-2">Price, Size & Indicators</h2>
+            <canvas id="priceChart" class="w-full h-64"></canvas>
+            <div class="mt-2 flex justify-between text-sm text-gray-400">
+                <span id="pctChange"></span>
+                <span id="lastClose"></span>
+            </div>
+        </div>
+
+        <div class="bg-gray-800 p-4 rounded-lg shadow">
+            <h2 class="text-lg font-semibold mb-2">MACD</h2>
+            <canvas id="macdChart" class="w-full h-64"></canvas>
+        </div>
+    </section>
+
+
+    <section class="grid grid-cols-1 sm:grid-cols-4 gap-6">
+
+        <div class="bg-gray-800 p-4 rounded-lg text-center">
+            <h3 class="text-sm text-gray-400">Fear Factor</h3>
+            <canvas id="fearGauge" width="100" height="100" class="mx-auto mt-4"></canvas>
+            <p id="fearValue" class="mt-2 text-xl font-bold"></p>
+        </div>
+
+        <div class="bg-gray-800 p-4 rounded-lg text-center">
+            <h3 class="text-sm text-gray-400">RSI (14)</h3>
+            <canvas id="rsiGauge" width="100" height="100" class="mx-auto mt-4"></canvas>
+            <p id="rsiValue" class="mt-2 text-xl font-bold"></p>
+        </div>
+
+        <div class="bg-gray-800 p-4 rounded-lg text-center">
+            <h3 class="text-sm text-gray-400">Funding Rate (8h)</h3>
+            <canvas id="fundingGauge" width="100" height="100" class="mx-auto mt-4"></canvas>
+            <p id="fundingValue" class="mt-2 text-xl font-bold"></p>
+        </div>
+
+        <div class="bg-gray-800 p-4 rounded-lg text-center">
+            <h3 class="text-sm text-gray-400">Open Interest Δ (24h)</h3>
+            <canvas id="oiGauge" width="100" height="100" class="mx-auto mt-4"></canvas>
+            <p id="oiValue" class="mt-2 text-xl font-bold"></p>
+        </div>
+    </section>
+
+    <section class="bg-gray-800 p-4 rounded-lg text-center">
+        <h2 class="text-lg font-semibold text-gray-300 mb-2">Signal</h2>
+        <p id="signal" class="text-3xl font-bold"></p>
+    </section>
+</div>
+
+<script>
+    const state = { charts: {}, ws: null, currentPrice: null, isDarkTheme: true };
+    const API = {
+        klines: (sym, limit=100) => `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=1d&limit=${limit}`,
+        funding: sym => `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${sym}&limit=1`,
+        oi: sym => `https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=1d&limit=2`,
+        ticker: sym => `https://api.binance.com/api/v3/ticker/price?symbol=${sym}`
+    };
+
+    function getThemeColors() {
+        if (state.isDarkTheme) {
+            return {
+                gridColor: '#374151',
+                tickColor: '#9CA3AF',
+                legendColor: '#D1D5DB',
+                backgroundColor: '#374151'
+            };
+        } else {
+            return {
+                gridColor: '#E5E7EB',
+                tickColor: '#6B7280',
+                legendColor: '#374151',
+                backgroundColor: '#F3F4F6'
+            };
+        }
+    }
+
+    function drawGauge(ctxId, val, maxVal = 100) {
+        const ctx = document.getElementById(ctxId).getContext('2d');
+        if(state.charts[ctxId]) state.charts[ctxId].destroy();
+        const normalizedVal = Math.min(Math.abs(val), maxVal);
+        const colors = getThemeColors();
+        return new Chart(ctx, {
+            type: 'doughnut',
+            data: { datasets:[{ data:[normalizedVal, maxVal-normalizedVal], backgroundColor: [val>=0?'#10B981':'#EF4444', colors.backgroundColor], cutout:'75%', borderWidth:0 }] },
+            options:{ plugins:{ tooltip:false, legend:false } }
+        });
+    }
+
+    function calculateEMA(data, period) {
+        const ema = [];
+        const k = 2 / (period + 1);
+        
+        let sum = 0;
+        for (let i = 0; i < period && i < data.length; i++) {
+            sum += data[i];
+        }
+        ema[period - 1] = sum / period;
+        
+        for (let i = period; i < data.length; i++) {
+            ema[i] = data[i] * k + ema[i - 1] * (1 - k);
+        }
+        
+        return ema;
+    }
+
+    function calcStats(klines) {
+        const closes = klines.map(k => k.c);
+        
+        let gains = 0, losses = 0, period = 14;
+        for(let i = 1; i <= period && i < closes.length; i++) { 
+            const diff = closes[i] - closes[i-1]; 
+            if(diff > 0) gains += diff; 
+            else losses += -diff; 
+        }
+        let avgGain = gains / period, avgLoss = losses / period;
+        
+        for(let i = period + 1; i < closes.length; i++) { 
+            const diff = closes[i] - closes[i-1]; 
+            avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period; 
+            avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period; 
+        }
+        const rsi = avgLoss === 0 ? 100 : (100 - 100 / (1 + (avgGain / avgLoss))).toFixed(0);
+        
+        const recentCloses = closes.slice(-20);
+        const returns = [];
+        for(let i = 1; i < recentCloses.length; i++) {
+            returns.push((recentCloses[i] - recentCloses[i-1]) / recentCloses[i-1]);
+        }
+        const avgReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+        const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - avgReturn, 2), 0) / returns.length;
+        const volatility = Math.sqrt(variance);
+        
+        const fear = Math.min(volatility / 0.04 * 100, 100).toFixed(0);
+        
+        return { fear, rsi };
+    }
+
+    function ema(arr, n) {
+        const k = 2 / (n + 1); 
+        const result = [];
+        let prevEma = arr.slice(0, n).reduce((u, v) => u + v) / n;
+        result.push(prevEma);
+        
+        for (let i = n; i < arr.length; i++) {
+            prevEma = arr[i] * k + prevEma * (1 - k);
+            result.push(prevEma);
+        }
+        return result;
+    }
+
+    function calcMACD(klines) { 
+        const closes = klines.map(k => k.c); 
+        const ema12 = calculateEMA(closes, 12);
+        const ema26 = calculateEMA(closes, 26);
+        
+        const diff = [];
+        const startIdx = Math.max(11, 25);
+        
+        for (let i = startIdx; i < closes.length; i++) {
+            if (ema12[i] !== undefined && ema26[i] !== undefined) {
+                diff.push(ema12[i] - ema26[i]);
+            }
+        }
+        
+        const sig = calculateEMA(diff, 9);
+        const hist = [];
+        
+        for (let i = 8; i < diff.length && i - 8 < sig.length; i++) {
+            hist.push(diff[i] - sig[i - 8]);
+        }
+        
+        const times = klines.slice(-(hist.length)).map(k => k.t);
+        return { times, diff: diff.slice(-hist.length), sig: sig.slice(-hist.length), hist };
+    }
+
+    function calcMAs(klines) {
+        const closes = klines.map(k => k.c);
+        const ema20 = calculateEMA(closes, 20);
+        const ema50 = calculateEMA(closes, 50);
+        
+        const sma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+        const sd20 = Math.sqrt(closes.slice(-20).reduce((s, x) => s + (x - sma20) ** 2, 0) / 20);
+        
+        return { 
+            ema20: ema20.slice(-closes.length), 
+            ema50: ema50.slice(-closes.length), 
+            bbUpper: sma20 + 2 * sd20, 
+            bbLower: sma20 - 2 * sd20 
+        };
+    }
+
+    function updateCurrentPrice(price) {
+        state.currentPrice = price;
+        const priceElement = document.getElementById('currentPrice');
+        priceElement.textContent = `$${price.toFixed(2)}`;
+        
+        priceElement.classList.remove('text-green-400', 'text-red-400');
+        priceElement.classList.add(Math.random() > 0.5 ? 'text-green-400' : 'text-red-400');
+        setTimeout(() => {
+            priceElement.classList.remove('text-red-400');
+            priceElement.classList.add('text-green-400');
+        }, 500);
+    }
+
+    function recreateChartsWithTheme() {
+        if (state.lastKlines) {
+            renderCharts(state.lastKlines);
+        }
+    }
+
+    function renderCharts(klines) {
+        const colors = getThemeColors();
+        
+        const { ema20, ema50, bbUpper, bbLower } = calcMAs(klines);
+        const ctxP = document.getElementById('priceChart').getContext('2d');
+        if(state.charts.priceChart) state.charts.priceChart.destroy();
+        
+        state.charts.priceChart = new Chart(ctxP, {
+            data: { datasets: [
+                { type: 'line', data: klines.map(d => ({x: d.t, y: d.c})), label: 'Close', borderColor: '#6366F1', borderWidth: 2, pointRadius: 0 },
+                { type: 'line', data: klines.map((d, i) => ({x: d.t, y: ema20[i] || null})), label: 'EMA20', borderDash: [5,5], borderColor: '#F59E0B', pointRadius: 0 },
+                { type: 'line', data: klines.map((d, i) => ({x: d.t, y: ema50[i] || null})), label: 'EMA50', borderDash: [5,5], borderColor: '#10B981', pointRadius: 0 },
+                { type: 'line', data: klines.map(d => ({x: d.t, y: bbUpper})), label: 'BB Upper', borderColor: '#EF4444', pointRadius: 0, fill: false },
+                { type: 'line', data: klines.map(d => ({x: d.t, y: bbLower})), label: 'BB Lower', borderColor: '#EF4444', pointRadius: 0, fill: '3' },
+                { type: 'bar', data: klines.map(d => ({x: d.t, y: d.v})), label: 'Vol', yAxisID: 'vol', backgroundColor: colors.backgroundColor }
+            ] }, 
+            options: {
+                scales: { 
+                    x: { type: 'time', time: {unit: 'day'}, grid: {color: colors.gridColor}, ticks: {color: colors.tickColor} },
+                    y: { position: 'left', grid: {color: colors.gridColor}, ticks: {color: colors.tickColor} },
+                    vol: { position: 'right', grid: {display: false}, ticks: {color: colors.tickColor} } 
+                },
+                plugins: { legend: { labels: {color: colors.legendColor} }, tooltip: { mode: 'index', intersect: false } }
+            }
+        });
+
+        const mac = calcMACD(klines);
+        const ctxM = document.getElementById('macdChart').getContext('2d');
+        if(state.charts.macdChart) state.charts.macdChart.destroy();
+        state.charts.macdChart = new Chart(ctxM, {
+            data: { datasets: [
+                { type: 'line', data: mac.times.map((t,i) => ({x: t, y: mac.diff[i]})), label: 'MACD', borderColor: '#10B981', fill: false, pointRadius: 0 },
+                { type: 'line', data: mac.times.map((t,i) => ({x: t, y: mac.sig[i]})), label: 'Signal', borderColor: '#F59E0B', fill: false, pointRadius: 0 },
+                { type: 'bar', data: mac.times.map((t,i) => ({x: t, y: mac.hist[i]})), label: 'Hist', backgroundColor: '#EF4444' }
+            ] }, 
+            options: { 
+                scales: { 
+                    x: { type: 'time', time: {unit: 'day'}, grid: {color: colors.gridColor}, ticks: {color: colors.tickColor} }, 
+                    y: { grid: {color: colors.gridColor}, ticks: {color: colors.tickColor} } 
+                }, 
+                plugins: { legend: { labels: {color: colors.legendColor} }, tooltip: { mode: 'index', intersect: false } } 
+            }
+        });
+
+        const { fear, rsi } = calcStats(klines);
+        document.getElementById('fearValue').textContent = `${fear}%`;
+        state.charts.fearGauge = drawGauge('fearGauge', fear);
+        document.getElementById('rsiValue').textContent = rsi;
+        state.charts.rsiGauge = drawGauge('rsiGauge', rsi);
+    }
+
+    async function loadData(){
+        const raw = document.getElementById('symbolInput').value.trim().toUpperCase();
+        const sym = raw.endsWith('USDT') ? raw : raw + 'USDT';
+        
+        try {
+            const currentPriceData = await fetch(API.ticker(sym)).then(r => r.json());
+            updateCurrentPrice(parseFloat(currentPriceData.price));
+            
+            const klines = await fetch(API.klines(sym, 100)).then(r => r.json()).then(a => a.map(c => ({ 
+                t: new Date(c[0]), 
+                c: +c[4], 
+                v: +c[5] 
+            })));
+            
+            state.lastKlines = klines;
+            
+            renderCharts(klines);
+            
+            const last = klines[klines.length-1].c;
+            const prev = klines[klines.length-2].c;
+            document.getElementById('lastClose').textContent = `Zavřeno: ${last.toFixed(2)}`;
+            document.getElementById('pctChange').textContent = `Δ: ${(((last/prev)-1)*100).toFixed(2)}%`;
+
+            const fundRaw = await fetch(API.funding(sym)).then(r => r.json());
+            const fund = parseFloat(fundRaw[0].fundingRate) * 100;
+            document.getElementById('fundingValue').textContent = `${fund.toFixed(4)}%`;
+            state.charts.fundingGauge = drawGauge('fundingGauge', fund, 1);
+
+            const oiData = await fetch(API.oi(sym)).then(r => r.json());
+            const oiDelta = ((oiData[1].sumOpenInterest - oiData[0].sumOpenInterest) / oiData[0].sumOpenInterest * 100).toFixed(2);
+            document.getElementById('oiValue').textContent = `${oiDelta}%`;
+            state.charts.oiGauge = drawGauge('oiGauge', parseFloat(oiDelta), 50);
+
+            const { fear, rsi } = calcStats(klines);
+            const sig = (rsi < 30 && fund > 0) ? 'STRONG BUY' : (rsi < 30 ? 'BUY' : (rsi > 70 && fund < 0 ? 'STRONG SELL' : (rsi > 70 ? 'SELL' : 'HOLD')));
+            document.getElementById('signal').textContent = sig;
+
+            if(state.ws) state.ws.close();
+            state.ws = new WebSocket(`wss://stream.binance.com:9443/ws/${sym.toLowerCase()}@trade`);
+            state.ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                updateCurrentPrice(parseFloat(data.p));
+            };
+            
+        } catch(e) {
+            alert('Chyba při načítání dat: ' + e.message);
+            console.error(e);
+        }
+    }
+
+    document.getElementById('themeToggle').onclick = () => {
+        const body = document.getElementById('app');
+        const themeButton = document.getElementById('themeToggle');
+        
+        state.isDarkTheme = !state.isDarkTheme;
+        
+        if (state.isDarkTheme) {
+            body.classList.remove('light-theme');
+            body.classList.add('bg-gray-900', 'text-gray-100');
+            body.classList.remove('bg-white', 'text-gray-900');
+            themeButton.textContent = '🌙';
+        } else {
+            body.classList.add('light-theme');
+            body.classList.remove('bg-gray-900', 'text-gray-100');
+            body.classList.add('bg-white', 'text-gray-900');
+            themeButton.textContent = '☀️';
+        }
+        
+        recreateChartsWithTheme();
+    };
+    
+    document.getElementById('loadBtn').addEventListener('click', loadData);
+    document.getElementById('symbolInput').addEventListener('keyup', e => e.key === 'Enter' && loadData());
+    window.addEventListener('load', loadData);
+</script>
+</body>
+</html>
